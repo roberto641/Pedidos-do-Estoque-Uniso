@@ -3324,20 +3324,40 @@ function configurarImportacaoPedidos() {
     return tr;
   }
 
+  // Reaproveita o mesmo parágrafo de aviso (id "avisoDuplicadosImportacao")
+  // tanto para duplicidade quanto para campo obrigatório em branco - são os
+  // dois motivos que desabilitam o "Enviar". Antes desta correção, um
+  // campo em branco (ex.: Rec. Estoque) desabilitava o botão SEM nenhuma
+  // mensagem visível (só um sublinhado sutil na linha + tooltip ao passar o
+  // mouse), e o botão continuava com a mesma cor de "habilitado" - dava a
+  // impressão de estar travado sem explicação. Agora, além do CSS de botão
+  // desabilitado (.btn:disabled em styles.css), aparece sempre uma
+  // mensagem dizendo exatamente o que falta preencher e em qual pedido.
   function atualizarEstadoBotaoEnviar() {
     const duplicados = listarDuplicadosImportacao(itensImportacao);
-    const algumInvalido = itensImportacao.some((item) => validarLinhaImportacao(item).length > 0);
+    const pendencias = itensImportacao
+      .map((item) => {
+        const problemas = validarLinhaImportacao(item);
+        if (problemas.length === 0) return null;
+        const identificador = item.numeroPedido || `linha ${item._linhaPlanilha} da planilha`;
+        return `${identificador} (${problemas.join(', ')})`;
+      })
+      .filter(Boolean);
 
     if (duplicados.length > 0) {
       avisoDuplicados.textContent =
         'Importação bloqueada: número(s) de pedido duplicado(s) (repetido no arquivo ou já ' +
         `existente no sistema) - ${duplicados.join(', ')}. Corrija e envie o arquivo novamente.`;
       avisoDuplicados.hidden = false;
+    } else if (pendencias.length > 0) {
+      avisoDuplicados.textContent =
+        'Preencha os campos obrigatórios em branco antes de enviar - ' + pendencias.join('; ') + '.';
+      avisoDuplicados.hidden = false;
     } else {
       avisoDuplicados.hidden = true;
     }
 
-    btnEnviar.disabled = duplicados.length > 0 || algumInvalido || itensImportacao.length === 0;
+    btnEnviar.disabled = duplicados.length > 0 || pendencias.length > 0 || itensImportacao.length === 0;
   }
 
   function exibirPreview() {

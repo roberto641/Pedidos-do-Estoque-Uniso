@@ -36,7 +36,7 @@
  * normalmente.
  */
 let db, auth, signInAnonymously, onAuthStateChanged;
-let collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, serverTimestamp, query, orderBy;
+let collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, serverTimestamp, query, orderBy, writeBatch;
 let colecaoPedidos, colecaoColaboradores;
 
 const NOME_COLECAO = 'pedidos';
@@ -388,6 +388,7 @@ async function carregarFirebaseEIniciar() {
     serverTimestamp = firestoreModule.serverTimestamp;
     query = firestoreModule.query;
     orderBy = firestoreModule.orderBy;
+    writeBatch = firestoreModule.writeBatch;
 
     colecaoPedidos = collection(db, NOME_COLECAO);
     colecaoColaboradores = collection(db, NOME_COLECAO_COLABORADORES);
@@ -556,7 +557,18 @@ async function salvarPedido(dadosFormulario, idExistente) {
       alturaCm: null,
       larguraCm: null,
       comprimentoCm: null,
-      pesoCubadoKg: null
+      pesoCubadoKg: null,
+      // Dados de referência trazidos pela importação em lote via planilha
+      // (item 33 do README) - ficam nulos em pedidos lançados manualmente
+      // por este formulário, que não tem campos para eles.
+      idExterno: null,
+      parceiroCodigo: null,
+      modalidade: null,
+      nomeRepresentante: null,
+      // Data/hora completa da coluna "Cadastro" da planilha importada (item
+      // 33 do README), exibida como sub-linha abaixo do Cliente no Painel
+      // Consolidado. Fica nula em pedidos lançados manualmente.
+      cadastroPlanilha: null
     });
   }
 }
@@ -587,6 +599,247 @@ function calcularPesoCubado(alturaCm, larguraCm, comprimentoCm) {
 function buscarPedidoPorNumero(numero) {
   const alvo = String(numero).trim().toLowerCase();
   return estado.pedidos.find((pedido) => String(pedido.numeroPedido).trim().toLowerCase() === alvo) || null;
+}
+
+/* -------------------------------------------------------------------------
+   Importação em lote de pedidos via planilha (.xls/.xlsx) - item 33 do
+   README.
+   As colunas da planilha são lidas pelo NOME do cabeçalho de cada uma (não
+   pela posição/ordem em que aparecem no arquivo), normalizado (sem
+   acentos, minúsculo, espaços únicos) para tolerar pequenas variações de
+   grafia entre arquivos. Depois de lida, a planilha fica em memória numa
+   prévia editável (ver configurarImportacaoPedidos, seção 9) - nada é
+   gravado no Firestore até o operador confirmar em "Enviar".
+   ------------------------------------------------------------------------- */
+
+// Mapa "cabeçalho normalizado da planilha" -> campo do pedido no sistema.
+// Cobre a grafia correta esperada e a variação "quantidade de iitens" (erro
+// de digitação presente no arquivo-modelo enviado pelo Roberto) - ambas
+// mapeiam para o mesmo campo, quantidadeItens.
+const MAPA_CABECALHOS_IMPORTACAO = {
+  'numero do pedido': 'numeroPedido',
+  'id': 'idExterno',
+  'parceiro - codigo': 'parceiroCodigo',
+  'parceiro - razao social': 'cliente',
+  'cadastro': 'cadastro', // tratado em separado: gera dataPedido + cadastroPlanilha
+  'transportadora (nota fiscal)': 'modalidade',
+  'nome do representante': 'nomeRepresentante',
+  'quantidade de itens': 'quantidadeItens',
+  'quantidade de iitens': 'quantidadeItens',
+  'dias': 'slaDias'
+};
+
+// Remove acentos e reduz espaços/maiúsculas, para comparar cabeçalhos de
+// planilha de forma tolerante a pequenas diferenças de grafia/formatação.
+function normalizarCabecalho(texto) {
+  return String(texto || '')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+}
+
+// Converte o valor de uma célula em string 'yyyy-mm-dd' (ou null). Aceita
+// um objeto Date (a planilha é lida com cellDates:true, então uma célula
+// com formatação de data chega assim) ou texto em 'yyyy-mm-dd'/'dd/mm/aaaa'.
+function celulaParaDataISO(valor) {
+  if (!valor) return null;
+  if (valor instanceof Date && !isNaN(valor)) return formatarISO(valor);
+  const texto = String(valor).trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(texto)) return texto.slice(0, 10);
+  const partesBR = texto.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+  if (partesBR) {
+    let [, dia, mes, ano] = partesBR;
+    if (ano.length === 2) ano = `20${ano}`;
+    return `${ano}-${mes.padStart(2, '0')}-${dia.padStart(2, '0')}`;
+  }
+  return null;
+}
+
+// Igual a celulaParaDataISO, mas preservando hora:minuto quando disponíveis
+// ('yyyy-mm-ddTHH:mm'), usada no campo "Cadastro" (exibido como sub-linha
+// sob o Cliente no Painel Consolidado - ver criarCelulaCliente).
+function celulaParaDataHoraISO(valor) {
+  if (!valor) return null;
+  if (valor instanceof Date && !isNaN(valor)) {
+    const dataISO = formatarISO(valor);
+    const hora = String(valor.getHours()).padStart(2, '0');
+    const minuto = String(valor.getMinutes()).padStart(2, '0');
+    return `${dataISO}T${hora}:${minuto}`;
+  }
+  return celulaParaDataISO(valor); // sem hora disponível no valor - só a data
+}
+
+let proximoIdLinhaImportacao = 1;
+
+// Lê o arquivo de planilha escolhido (.xls/.xlsx) e devolve a lista de
+// pedidos reconhecidos, já mapeados para os campos do sistema - pronta para
+// a prévia editável. Lança erro (mensagem amigável) se não encontrar a
+// coluna "Número do pedido", obrigatória para identificar cada pedido.
+async function lerPlanilhaPedidos(arquivo) {
+  if (typeof XLSX === 'undefined') {
+    throw new Error(
+      'Não foi possível carregar a biblioteca de leitura de planilhas (verifique a conexão ' +
+      'com a internet e recarregue a página).'
+    );
+  }
+
+  const bytes = await arquivo.arrayBuffer();
+  const livro = XLSX.read(bytes, { type: 'array', cellDates: true });
+  const planilha = livro.Sheets[livro.SheetNames[0]];
+  const linhasBrutas = XLSX.utils.sheet_to_json(planilha, { defval: '' });
+
+  if (linhasBrutas.length === 0) {
+    throw new Error('A planilha não tem nenhuma linha de dados.');
+  }
+
+  const cabecalhosOriginais = Object.keys(linhasBrutas[0]);
+  const temColunaNumeroPedido = cabecalhosOriginais.some(
+    (cabecalho) => MAPA_CABECALHOS_IMPORTACAO[normalizarCabecalho(cabecalho)] === 'numeroPedido'
+  );
+  if (!temColunaNumeroPedido) {
+    throw new Error(
+      'Não encontrei a coluna "Número do pedido" na planilha. Verifique se o arquivo tem essa ' +
+      'coluna (pode estar em qualquer posição, mas o nome precisa existir).'
+    );
+  }
+
+  return linhasBrutas.map((linhaBruta, indice) => mapearLinhaPlanilha(linhaBruta, indice));
+}
+
+// Mapeia uma linha bruta da planilha (objeto "cabeçalho original" -> valor)
+// para um item da prévia de importação, reconhecendo cada coluna pelo nome
+// (MAPA_CABECALHOS_IMPORTACAO), não pela posição.
+function mapearLinhaPlanilha(linhaBruta, indice) {
+  const item = {
+    _linhaId: proximoIdLinhaImportacao++,
+    _linhaPlanilha: indice + 2, // +2: a linha 1 da planilha é o cabeçalho
+    numeroPedido: '',
+    cliente: '',
+    idExterno: '',
+    parceiroCodigo: '',
+    modalidade: '',
+    nomeRepresentante: '',
+    quantidadeItens: '',
+    slaDias: '',
+    dataPedido: '',
+    cadastroPlanilha: null,
+    // "Data de Recebimento no Estoque" não vem da planilha - por decisão do
+    // Roberto (item 33 do README), fica em branco para o operador lançar
+    // manualmente na prévia, pois o prazo varia de pedido para pedido.
+    dataRecebimentoEstoque: ''
+  };
+
+  Object.entries(linhaBruta).forEach(([cabecalhoOriginal, valor]) => {
+    const campo = MAPA_CABECALHOS_IMPORTACAO[normalizarCabecalho(cabecalhoOriginal)];
+    if (!campo) return;
+
+    if (campo === 'cadastro') {
+      item.dataPedido = celulaParaDataISO(valor) || item.dataPedido;
+      item.cadastroPlanilha = celulaParaDataHoraISO(valor);
+    } else if (campo === 'quantidadeItens' || campo === 'slaDias') {
+      item[campo] = valor === '' ? '' : Number(valor);
+    } else {
+      item[campo] = String(valor).trim();
+    }
+  });
+
+  return item;
+}
+
+// Valida uma linha da prévia de importação (já com os eventuais ajustes do
+// operador). Retorna a lista de problemas encontrados (vazia se estiver
+// tudo certo).
+function validarLinhaImportacao(item) {
+  const problemas = [];
+  if (!item.numeroPedido) problemas.push('Número do pedido em branco');
+  if (!item.cliente) problemas.push('Cliente em branco');
+  if (!item.dataPedido) problemas.push('Data do pedido em branco');
+  if (!item.dataRecebimentoEstoque) problemas.push('Data de recebimento no estoque em branco');
+  if (!item.slaDias || Number(item.slaDias) <= 0) problemas.push('SLA (dias) inválido');
+  if (!item.quantidadeItens || Number(item.quantidadeItens) <= 0) problemas.push('Quantidade de itens inválida');
+  return problemas;
+}
+
+// Verifica duplicidade de "Número do pedido": dentro do próprio arquivo
+// (duas linhas com o mesmo número) e contra pedidos já existentes no
+// Firestore (estado.pedidos). Por decisão explícita do solicitante (item 33
+// do README), qualquer duplicidade BLOQUEIA A IMPORTAÇÃO INTEIRA - nada é
+// gravado até o arquivo ser corrigido e reenviado.
+function listarDuplicadosImportacao(itens) {
+  const contagem = new Map();
+  itens.forEach((item) => {
+    const chave = String(item.numeroPedido).trim().toLowerCase();
+    if (!chave) return;
+    contagem.set(chave, (contagem.get(chave) || 0) + 1);
+  });
+
+  const duplicados = new Set();
+  itens.forEach((item) => {
+    const chave = String(item.numeroPedido).trim().toLowerCase();
+    if (!chave) return;
+    if (contagem.get(chave) > 1 || buscarPedidoPorNumero(item.numeroPedido)) {
+      duplicados.add(item.numeroPedido);
+    }
+  });
+
+  return Array.from(duplicados);
+}
+
+// Grava todos os pedidos da prévia de importação no Firestore, em lotes
+// (writeBatch) de até 450 operações por vez - a API do Firestore limita
+// cada lote a 500 operações; a margem evita passar do limite por engano com
+// arquivos muito grandes. Assume que a lista já passou pela validação de
+// campos obrigatórios (validarLinhaImportacao) e de duplicados
+// (listarDuplicadosImportacao) sem nenhum problema - quem chama esta função
+// é responsável por checar isso antes.
+async function confirmarImportacaoPedidos(itens) {
+  const TAMANHO_LOTE = 450;
+  for (let inicio = 0; inicio < itens.length; inicio += TAMANHO_LOTE) {
+    const grupo = itens.slice(inicio, inicio + TAMANHO_LOTE);
+    const lote = writeBatch(db);
+    grupo.forEach((item) => {
+      const dataVencimento = calcularDataVencimento(item.dataRecebimentoEstoque, item.slaDias);
+      lote.set(doc(colecaoPedidos), {
+        numeroPedido: String(item.numeroPedido).trim(),
+        cliente: String(item.cliente).trim(),
+        dataPedido: item.dataPedido,
+        dataRecebimentoEstoque: item.dataRecebimentoEstoque,
+        slaDias: Number(item.slaDias),
+        dataVencimento,
+        quantidadeItens: Number(item.quantidadeItens),
+        observacao: '',
+        status: 'aberto',
+        criadoEm: serverTimestamp(),
+        finalizadoEm: null,
+        resultadoSLA: null,
+        diasDiferencaFinalizacao: null,
+        statusSeparacao: 'a-separar',
+        operadorInicioSeparacao: null,
+        dataHoraInicioSeparacao: null,
+        operadorFimSeparacao: null,
+        dataHoraFimSeparacao: null,
+        statusOrganizacao: 'a-organizar',
+        operadorInicioOrganizacao: null,
+        dataHoraInicioOrganizacao: null,
+        operadorFimOrganizacao: null,
+        dataHoraFimOrganizacao: null,
+        pesoCargaKg: null,
+        quantidadeCaixas: null,
+        alturaCm: null,
+        larguraCm: null,
+        comprimentoCm: null,
+        pesoCubadoKg: null,
+        // Dados de referência trazidos pela planilha (item 33 do README).
+        idExterno: item.idExterno || null,
+        parceiroCodigo: item.parceiroCodigo || null,
+        modalidade: item.modalidade || null,
+        nomeRepresentante: item.nomeRepresentante || null,
+        cadastroPlanilha: item.cadastroPlanilha || null
+      });
+    });
+    await lote.commit();
+  }
 }
 
 /* -------------------------------------------------------------------------
@@ -780,7 +1033,57 @@ async function finalizarOrganizacaoPedido(pedido, nomeOperador, pesoCargaKg, qua
 
   if (pedido.statusSeparacao === 'separado' && pedido.status !== 'finalizado') {
     await finalizarPedido(pedido);
+    // Integração com o sistema de logística (item 33 do README): dispara só
+    // quando o pedido é finalizado de fato (baixa completa), nunca ao apenas
+    // finalizar a Organização de um pedido cuja Separação ainda não tenha
+    // acabado (esse "if" acima é exatamente a mesma condição que decide se
+    // finalizarPedido() roda).
+    notificarSistemaLogistica(pedido.numeroPedido, pedido.cliente, Number(quantidadeCaixas));
   }
+}
+
+// URL do sistema de logística (Google Apps Script) que recebe os pedidos
+// finalizados para dar andamento à retirada/coleta. Fornecida pelo
+// solicitante (item 33 do README).
+const URL_INTEGRACAO_LOGISTICA = 'https://script.google.com/macros/s/AKfycbwLCgBPAmL6tYwhVHOKBBgA-ZyBzRduAMVeXJ3ERzstW6naRVg-QuviBByxG6k_8vOC/exec?m=logistica';
+
+/**
+ * Notifica o sistema de logística externo de que um pedido foi finalizado
+ * (baixa completa), para que ele siga para retirada/coleta. Dispara em
+ * segundo plano (nunca aguardado por quem chama) e NUNCA impede nem atrasa
+ * a finalização do pedido no Firestore, que já aconteceu antes desta função
+ * ser chamada - se o envio falhar, o pedido continua finalizado normalmente
+ * aqui, só o aviso à logística é que não chegou.
+ *
+ * Envia por GET (parâmetros na própria URL, no padrão que o endpoint já usa
+ * com "?m=logistica") os campos pedidos pelo solicitante: "Pedido",
+ * "CLIENTE", "CAIXAS" e "SOLICITAÇÃO" (a data da baixa), sempre com
+ * "status"="Pendente". Usa `mode: 'no-cors'` porque o endpoint é um Apps
+ * Script de terceiro cuja configuração de CORS não controlamos - isso evita
+ * que o navegador bloqueie o envio, mas tem a contrapartida de que só
+ * conseguimos detectar falha de REDE (sem internet, domínio inacessível);
+ * uma eventual rejeição do lado do Apps Script (ex.: erro no script) não
+ * aparece aqui, fica só registrada do lado de lá. Por isso a forma
+ * confiável de confirmar que a integração está funcionando é conferir
+ * diretamente no sistema de logística após finalizar um pedido de teste.
+ */
+function notificarSistemaLogistica(numeroPedido, cliente, quantidadeCaixasFechadas) {
+  const parametros = new URLSearchParams({
+    Pedido: numeroPedido,
+    CLIENTE: cliente,
+    CAIXAS: String(quantidadeCaixasFechadas),
+    SOLICITAÇÃO: formatarBR(hojeISO()),
+    status: 'Pendente'
+  });
+  const url = `${URL_INTEGRACAO_LOGISTICA}&${parametros.toString()}`;
+
+  fetch(url, { method: 'GET', mode: 'no-cors' }).catch((erro) => {
+    console.warn(
+      `Não foi possível notificar o sistema de logística para o pedido ${numeroPedido} ` +
+      `(o pedido continua finalizado normalmente aqui - só o aviso à logística falhou):`,
+      erro
+    );
+  });
 }
 
 async function finalizarPedido(pedido) {
@@ -810,6 +1113,16 @@ async function excluirPedido(id) {
 /* =========================================================================
    7. RENDERIZAÇÃO DE INTERFACE
    ========================================================================= */
+
+// Escapa caracteres especiais de HTML antes de interpolar texto vindo de
+// dados (ex.: campos trazidos pela importação em lote de planilha, item 33
+// do README) dentro de um template de innerHTML, evitando que o conteúdo
+// seja interpretado como marcação.
+function escaparHTML(texto) {
+  const div = document.createElement('div');
+  div.textContent = String(texto);
+  return div.innerHTML;
+}
 
 // Ponto único de atualização: recalcula classificações e redesenha tudo.
 function renderizarTudo() {
@@ -913,7 +1226,11 @@ function pedidoPassaFiltros(pedido) {
 
   if (filtros.texto) {
     const alvo = filtros.texto.trim().toLowerCase();
-    const textoPedido = `${pedido.numeroPedido} ${pedido.cliente}`.toLowerCase();
+    // Inclui ID e Parceiro - Código (trazidos pela importação em lote, item 33
+    // do README) na busca, mesmo eles não sendo exibidos na tabela - assim,
+    // ao procurar pelo ID ou pelo código do parceiro, o pedido do cliente
+    // correspondente é encontrado normalmente.
+    const textoPedido = `${pedido.numeroPedido} ${pedido.cliente} ${pedido.idExterno || ''} ${pedido.parceiroCodigo || ''}`.toLowerCase();
     if (!textoPedido.includes(alvo)) return false;
   }
 
@@ -1209,6 +1526,38 @@ function criarBotaoAtribuicao(pedido) {
   return botao;
 }
 
+// Monta a célula "Cliente" da tabela e do cartão (modo celular) do Painel
+// Consolidado. Além do nome do cliente, mostra em sub-linhas discretas o
+// nome do representante e a data/hora de cadastro na planilha de origem,
+// quando o pedido veio de uma importação em lote (item 33 do README) -
+// pedidos lançados manualmente não têm esses dados e a célula mostra só o
+// nome do cliente, como antes.
+function criarCelulaCliente(pedido) {
+  const td = document.createElement('td');
+  td.className = 'col-cliente';
+
+  const spanCliente = document.createElement('span');
+  spanCliente.className = 'cliente-nome';
+  spanCliente.textContent = pedido.cliente;
+  td.appendChild(spanCliente);
+
+  if (pedido.nomeRepresentante) {
+    const spanRepresentante = document.createElement('span');
+    spanRepresentante.className = 'cliente-sublinha';
+    spanRepresentante.textContent = `Repr.: ${pedido.nomeRepresentante}`;
+    td.appendChild(spanRepresentante);
+  }
+
+  if (pedido.cadastroPlanilha) {
+    const spanCadastro = document.createElement('span');
+    spanCadastro.className = 'cliente-sublinha';
+    spanCadastro.textContent = `Cadastro: ${formatarDataHoraBR(pedido.cadastroPlanilha)}`;
+    td.appendChild(spanCadastro);
+  }
+
+  return td;
+}
+
 function criarLinhaPedido(pedido) {
   const classificacao = pedido._classificacao;
   const tr = document.createElement('tr');
@@ -1228,15 +1577,23 @@ function criarLinhaPedido(pedido) {
       ? ` • Organização finalizada por ${pedido.operadorFimOrganizacao} em ${formatarDataHoraBrasilia(pedido.dataHoraFimOrganizacao)} (horário de Brasília)`
       : '');
 
-  const celulas = [
-    pedido.numeroPedido,
-    pedido.cliente,
+  const tdNumero = document.createElement('td');
+  tdNumero.textContent = pedido.numeroPedido;
+  tr.appendChild(tdNumero);
+
+  tr.appendChild(criarCelulaCliente(pedido));
+
+  const tdModalidade = document.createElement('td');
+  tdModalidade.textContent = pedido.modalidade || '-';
+  tr.appendChild(tdModalidade);
+
+  const celulasData = [
     formatarBR(pedido.dataPedido),
     formatarBR(pedido.dataRecebimentoEstoque),
     pedido.slaDias,
     formatarBR(pedido.dataVencimento)
   ];
-  celulas.forEach((valor) => {
+  celulasData.forEach((valor) => {
     const td = document.createElement('td');
     td.textContent = valor;
     tr.appendChild(td);
@@ -1306,6 +1663,21 @@ function criarCardPedido(pedido) {
   cliente.textContent = pedido.cliente;
   card.appendChild(cliente);
 
+  // Sub-linhas com dados trazidos pela importação em lote (item 33 do
+  // README) - ausentes em pedidos lançados manualmente.
+  if (pedido.nomeRepresentante) {
+    const representante = document.createElement('div');
+    representante.className = 'card-pedido-sublinha';
+    representante.textContent = `Repr.: ${pedido.nomeRepresentante}`;
+    card.appendChild(representante);
+  }
+  if (pedido.cadastroPlanilha) {
+    const cadastro = document.createElement('div');
+    cadastro.className = 'card-pedido-sublinha';
+    cadastro.textContent = `Cadastro: ${formatarDataHoraBR(pedido.cadastroPlanilha)}`;
+    card.appendChild(cadastro);
+  }
+
   const linhaStatusSeparacao = document.createElement('div');
   linhaStatusSeparacao.className = 'card-pedido-status-separacao';
   linhaStatusSeparacao.appendChild(criarBadgeStatusSeparacao(pedido));
@@ -1337,6 +1709,7 @@ function criarCardPedido(pedido) {
     <span>Recebimento: ${formatarBR(pedido.dataRecebimentoEstoque)}</span>
     <span>SLA: ${pedido.slaDias} dias úteis</span>
     <span>Vencimento: ${formatarBR(pedido.dataVencimento)}</span>
+    ${pedido.modalidade ? `<span>Modalidade: ${escaparHTML(pedido.modalidade)}</span>` : ''}
   `;
   card.appendChild(grid);
 
@@ -1878,6 +2251,21 @@ function abrirModalEdicaoPedido(pedido) {
   document.getElementById('campoEditarComprimentoCm').value = pedido.comprimentoCm != null ? pedido.comprimentoCm : '';
   document.getElementById('previewPesoCubadoEditar').textContent = pedido.pesoCubadoKg != null ? formatarPesoKg(pedido.pesoCubadoKg) : '—';
 
+  // Dados trazidos pela importação em lote via planilha (item 33 do
+  // README) - a seção só aparece quando o pedido tem pelo menos um desses
+  // campos preenchido, ou seja, quando veio de uma importação; pedidos
+  // lançados manualmente não mostram essa seção.
+  const temDadosImportacao = Boolean(
+    pedido.idExterno || pedido.parceiroCodigo || pedido.modalidade || pedido.nomeRepresentante
+  );
+  document.getElementById('secaoDadosImportacao').hidden = !temDadosImportacao;
+  if (temDadosImportacao) {
+    document.getElementById('valorEditarIdExterno').textContent = pedido.idExterno || '–';
+    document.getElementById('valorEditarParceiroCodigo').textContent = pedido.parceiroCodigo || '–';
+    document.getElementById('valorEditarModalidade').textContent = pedido.modalidade || '–';
+    document.getElementById('valorEditarNomeRepresentante').textContent = pedido.nomeRepresentante || '–';
+  }
+
   atualizarPreviewVencimento('campoDataRecebimento', 'campoSlaDias', 'previewVencimento');
   document.getElementById('modalPedido').hidden = false;
   document.getElementById('campoNumeroPedido').focus();
@@ -1923,6 +2311,23 @@ function fecharModalGrupo() {
   document.getElementById('modalGrupo').hidden = true;
 }
 
+// Alerta exibido assim que "Finalizar Organização" é concluída com sucesso
+// - pelo modal ⏱️ ou pelo atalho "Atribuição" - quando a quantidade de
+// caixas FECHADAS informada é maior que 15 (item 33 do README). É só um
+// aviso: a finalização em si já aconteceu no Firestore antes deste alerta
+// aparecer, então fechá-lo não desfaz nem repete nada.
+function exibirAlertaCaixasSeNecessario(numeroPedido, quantidadeCaixas) {
+  if (!(Number(quantidadeCaixas) > 15)) return;
+  document.getElementById('textoAlertaCaixas').textContent =
+    `O pedido ${numeroPedido} foi finalizado com ${quantidadeCaixas} caixas. ` +
+    `Por se tratar de um pedido de maior volume, priorize a atenção na retirada/coleta.`;
+  document.getElementById('modalAlertaCaixas').hidden = false;
+}
+
+function fecharModalAlertaCaixas() {
+  document.getElementById('modalAlertaCaixas').hidden = true;
+}
+
 /* =========================================================================
    9. FILTROS, BUSCA E EVENTOS DE INTERFACE
    ========================================================================= */
@@ -1937,6 +2342,12 @@ function configurarModais() {
   document.getElementById('btnFecharModalGrupo').addEventListener('click', fecharModalGrupo);
   document.getElementById('modalGrupo').addEventListener('click', (evento) => {
     if (evento.target.id === 'modalGrupo') fecharModalGrupo();
+  });
+
+  document.getElementById('btnFecharModalAlertaCaixas').addEventListener('click', fecharModalAlertaCaixas);
+  document.getElementById('btnOkAlertaCaixas').addEventListener('click', fecharModalAlertaCaixas);
+  document.getElementById('modalAlertaCaixas').addEventListener('click', (evento) => {
+    if (evento.target.id === 'modalAlertaCaixas') fecharModalAlertaCaixas();
   });
 
   document.getElementById('campoDataRecebimento').addEventListener('input', () =>
@@ -2409,6 +2820,10 @@ function configurarModalSeparacao() {
         ? `Organização do pedido ${pedido.numeroPedido} finalizada por ${nome}. Pedido concluído automaticamente.`
         : `Organização do pedido ${pedido.numeroPedido} finalizada por ${nome}.`;
       sucessoOrg.hidden = false;
+      // Alerta de pedido de grande volume (>15 caixas fechadas - item 33 do
+      // README). Precisa ler campoQtdCaixasOrg.value ANTES de limpá-lo nas
+      // linhas abaixo.
+      exibirAlertaCaixasSeNecessario(pedido.numeroPedido, campoQtdCaixasOrg.value);
       campoNumeroOrg.value = '';
       campoPesoOrg.value = '';
       campoQtdCaixasOrg.value = '';
@@ -2655,6 +3070,9 @@ function configurarModalAtribuicaoFase() {
       } else if (finalizandoOrganizacao) {
         await finalizarOrganizacaoPedido(pedidoAtual, nome, campoPeso.value, campoQtdCaixas.value, campoAltura.value, campoLargura.value, campoComprimento.value);
         exibirAvisoAtribuicao('Pedido finalizado e baixado.');
+        // Alerta de pedido de grande volume (>15 caixas fechadas - item 33
+        // do README), lido antes de fecharModal() limpar os campos.
+        exibirAlertaCaixasSeNecessario(pedidoAtual.numeroPedido, campoQtdCaixas.value);
       }
       fecharModal();
     } catch (erroSalvar) {
@@ -2817,9 +3235,159 @@ function configurarFormularioInlineNovoPedido() {
  * "2" por razões históricas — chegaram a existir também no Painel
  * Operacional, hoje removidos de lá por decisão do usuário), entre os
  * indicadores e a lista de pedidos. A estrutura em "conjuntos" foi mantida
- * (em vez de referenciar os campos diretamente) para permitir reintroduzir
- * um segundo conjunto sincronizado no futuro sem reescrever esta função.
+ * Monta o painel "Importar Pedidos em Lote (Planilha)" do Painel
+ * Operacional (item 33 do README): leitura do arquivo .xls/.xlsx
+ * escolhido, prévia editável (Data do Pedido, Rec. Estoque e SLA ficam
+ * editáveis - os demais campos vêm fixos da planilha), bloqueio de envio
+ * quando há pedido inválido ou duplicado, e gravação em lote ao confirmar.
  */
+function configurarImportacaoPedidos() {
+  const inputArquivo = document.getElementById('inputImportarPlanilha');
+  const erro = document.getElementById('erroImportarPlanilha');
+  const preview = document.getElementById('previewImportacaoPlanilha');
+  const avisoDuplicados = document.getElementById('avisoDuplicadosImportacao');
+  const corpoTabela = document.getElementById('corpoTabelaPreviewImportacao');
+  const contador = document.getElementById('contadorPreviewImportacao');
+  const contadorEnviar = document.getElementById('contadorEnviarImportacao');
+  const sucesso = document.getElementById('sucessoImportacao');
+  const btnEnviar = document.getElementById('btnEnviarImportacao');
+  const btnCancelar = document.getElementById('btnCancelarImportacao');
+
+  let itensImportacao = [];
+
+  function limparPreview() {
+    itensImportacao = [];
+    preview.hidden = true;
+    corpoTabela.innerHTML = '';
+    avisoDuplicados.hidden = true;
+  }
+
+  // Célula com um <input> editável (Data do Pedido, Rec. Estoque ou SLA).
+  // Cada alteração revalida só aquela linha (classe/tooltip) e reavalia o
+  // botão "Enviar" - sem reconstruir a tabela inteira, para não perder o
+  // foco do campo a cada tecla digitada.
+  function criarCelulaEditavelImportacao(item, tr, campo, tipo) {
+    const td = document.createElement('td');
+    const input = document.createElement('input');
+    input.type = tipo;
+    if (tipo === 'number') input.min = '1';
+    input.value = item[campo] != null ? item[campo] : '';
+    input.className = 'input-preview-importacao';
+    input.addEventListener('input', () => {
+      item[campo] = input.value;
+      const problemas = validarLinhaImportacao(item);
+      tr.classList.toggle('linha-importacao-invalida', problemas.length > 0);
+      tr.title = problemas.join(' • ');
+      atualizarEstadoBotaoEnviar();
+    });
+    td.appendChild(input);
+    return td;
+  }
+
+  function construirLinhaPreview(item) {
+    const tr = document.createElement('tr');
+
+    const tdNumero = document.createElement('td');
+    tdNumero.textContent = item.numeroPedido || `(linha ${item._linhaPlanilha} sem número)`;
+    tr.appendChild(tdNumero);
+
+    const tdCliente = document.createElement('td');
+    tdCliente.textContent = item.cliente || '-';
+    tr.appendChild(tdCliente);
+
+    tr.appendChild(criarCelulaEditavelImportacao(item, tr, 'dataPedido', 'date'));
+    tr.appendChild(criarCelulaEditavelImportacao(item, tr, 'dataRecebimentoEstoque', 'date'));
+    tr.appendChild(criarCelulaEditavelImportacao(item, tr, 'slaDias', 'number'));
+
+    const tdQtd = document.createElement('td');
+    tdQtd.textContent = item.quantidadeItens !== '' ? item.quantidadeItens : '-';
+    tr.appendChild(tdQtd);
+
+    const tdModalidade = document.createElement('td');
+    tdModalidade.textContent = item.modalidade || '-';
+    tr.appendChild(tdModalidade);
+
+    const tdRepresentante = document.createElement('td');
+    tdRepresentante.textContent = item.nomeRepresentante || '-';
+    tr.appendChild(tdRepresentante);
+
+    const tdId = document.createElement('td');
+    tdId.textContent = item.idExterno || '-';
+    tr.appendChild(tdId);
+
+    const problemas = validarLinhaImportacao(item);
+    if (problemas.length > 0) {
+      tr.classList.add('linha-importacao-invalida');
+      tr.title = problemas.join(' • ');
+    }
+
+    return tr;
+  }
+
+  function atualizarEstadoBotaoEnviar() {
+    const duplicados = listarDuplicadosImportacao(itensImportacao);
+    const algumInvalido = itensImportacao.some((item) => validarLinhaImportacao(item).length > 0);
+
+    if (duplicados.length > 0) {
+      avisoDuplicados.textContent =
+        'Importação bloqueada: número(s) de pedido duplicado(s) (repetido no arquivo ou já ' +
+        `existente no sistema) - ${duplicados.join(', ')}. Corrija e envie o arquivo novamente.`;
+      avisoDuplicados.hidden = false;
+    } else {
+      avisoDuplicados.hidden = true;
+    }
+
+    btnEnviar.disabled = duplicados.length > 0 || algumInvalido || itensImportacao.length === 0;
+  }
+
+  function exibirPreview() {
+    corpoTabela.innerHTML = '';
+    itensImportacao.forEach((item) => corpoTabela.appendChild(construirLinhaPreview(item)));
+    contador.textContent = String(itensImportacao.length);
+    contadorEnviar.textContent = String(itensImportacao.length);
+    preview.hidden = false;
+    sucesso.hidden = true;
+    atualizarEstadoBotaoEnviar();
+  }
+
+  inputArquivo.addEventListener('change', async () => {
+    const arquivo = inputArquivo.files[0];
+    erro.hidden = true;
+    if (!arquivo) return;
+
+    try {
+      itensImportacao = await lerPlanilhaPedidos(arquivo);
+      exibirPreview();
+    } catch (erroLeitura) {
+      limparPreview();
+      inputArquivo.value = '';
+      erro.textContent = 'Erro ao ler a planilha: ' + erroLeitura.message;
+      erro.hidden = false;
+    }
+  });
+
+  btnCancelar.addEventListener('click', () => {
+    limparPreview();
+    inputArquivo.value = '';
+  });
+
+  btnEnviar.addEventListener('click', async () => {
+    btnEnviar.disabled = true;
+    erro.hidden = true;
+    try {
+      await confirmarImportacaoPedidos(itensImportacao);
+      sucesso.textContent = `${itensImportacao.length} pedido(s) importado(s) com sucesso.`;
+      sucesso.hidden = false;
+      limparPreview();
+      inputArquivo.value = '';
+    } catch (erroEnvio) {
+      erro.textContent = 'Erro ao gravar os pedidos importados: ' + erroEnvio.message;
+      erro.hidden = false;
+      atualizarEstadoBotaoEnviar();
+    }
+  });
+}
+
 function configurarFiltrosEBusca() {
   const conjuntosFiltros = [
     {
@@ -3094,7 +3662,16 @@ function montarLinhasPlanilhaPedidos(lista) {
     'Largura (cm)': pedido.larguraCm != null ? pedido.larguraCm : '',
     'Comprimento (cm)': pedido.comprimentoCm != null ? pedido.comprimentoCm : '',
     'Peso Cubado (kg)': pedido.pesoCubadoKg != null ? pedido.pesoCubadoKg : '',
-    Observação: pedido.observacao || ''
+    Observação: pedido.observacao || '',
+    // Dados de referência trazidos pela importação em lote via planilha
+    // (item 33 do README) - ficam em branco em pedidos lançados manualmente.
+    ID: pedido.idExterno || '',
+    'Parceiro - Código': pedido.parceiroCodigo || '',
+    Modalidade: pedido.modalidade || '',
+    Representante: pedido.nomeRepresentante || '',
+    'Cadastro (planilha de origem)': pedido.cadastroPlanilha
+      ? formatarDataHoraBR(pedido.cadastroPlanilha)
+      : ''
   }));
 }
 
@@ -3270,6 +3847,7 @@ configurarModalAtribuicaoFase();
 configurarFormularioInlineNovoPedido();
 configurarFormularioColaboradores();
 configurarFiltrosEBusca();
+configurarImportacaoPedidos();
 configurarExtracaoExcel();
 renderizarTudo();
 carregarFirebaseEIniciar();

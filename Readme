@@ -82,6 +82,18 @@ Cada documento representa um pedido:
 | `larguraCm`                    | number \| `null`   | Largura (cm) da maior caixa/volume do pedido (mesmas condições de `alturaCm`) |
 | `comprimentoCm`                | number \| `null`   | Comprimento (cm) da maior caixa/volume do pedido (mesmas condições de `alturaCm`) |
 | `pesoCubadoKg`                 | number \| `null`   | Peso cubado (kg), calculado automaticamente = Altura × Largura × Comprimento (m) × 300 (fator rodoviário Brasil). Nunca digitado diretamente — sempre recalculado a partir das 3 dimensões acima |
+| `idExterno`                    | string \| `null`   | Coluna "ID" da planilha de importação em lote (item 33) — campo de referência livre, usado na busca do Painel Consolidado. `null` em pedidos lançados manualmente |
+| `parceiroCodigo`                | string \| `null`   | Coluna "Parceiro - Código" da planilha (item 33) — **oculto** nas telas (não aparece em nenhuma coluna/sub-linha), mas localizável pela busca do Painel Consolidado. `null` em pedidos lançados manualmente |
+| `modalidade`                   | string \| `null`   | Coluna "Transportadora (nota fiscal)" da planilha (item 33), exibida na tabela/cartão do Painel Consolidado sob o título "Modalidade". `null` em pedidos lançados manualmente |
+| `nomeRepresentante`            | string \| `null`   | Coluna "Nome do representante" da planilha (item 33), exibida como sub-linha sob o Cliente no Painel Consolidado. `null` em pedidos lançados manualmente |
+| `cadastroPlanilha`             | string `yyyy-mm-ddTHH:mm` \| `null` | Data/hora completa da coluna "Cadastro" da planilha (item 33) — a parte só da data também alimenta `dataPedido` no momento da importação. Exibida como sub-linha sob o Cliente. `null` em pedidos lançados manualmente |
+
+> Os cinco campos acima (`idExterno`, `parceiroCodigo`, `modalidade`,
+> `nomeRepresentante`, `cadastroPlanilha`) só existem em pedidos trazidos
+> pela **importação em lote via planilha** (item 33, seção 3) — pedidos
+> lançados manualmente pelo formulário "Adicionar Novo Pedido" sempre os
+> gravam como `null`. Em "Editar Pedido", a seção "Dados da importação" só
+> aparece quando pelo menos um desses campos estiver preenchido.
 
 > Nenhum valor de "dias restantes"/"dias de atraso" é armazenado — tudo é
 > calculado dinamicamente a cada renderização, comparando com a data atual.
@@ -596,6 +608,99 @@ podem ser ajustadas depois, se necessário:
       Essa reaproveitamento não se aplica ao campo de correção de
       "Quantidade de Caixas (fechada)" pelo motivo explicado naquela nota.
 
+33. **Importação em lote de pedidos via planilha, novos campos de
+    referência, alerta de grande volume e integração com o sistema de
+    logística** (adicionado nesta atualização):
+    - **Importação em lote (.xls/.xlsx):** novo painel "Importar Pedidos em
+      Lote (Planilha)" no Painel Operacional, abaixo de "Adicionar Novo
+      Pedido". As colunas são lidas pelo **nome do cabeçalho** de cada
+      uma — podem vir em **qualquer ordem** no arquivo — e não pela
+      posição, conforme pedido explícito do solicitante. Mapeamento:
+      | Coluna da planilha | Campo do pedido |
+      |---|---|
+      | Número do pedido | `numeroPedido` |
+      | ID | `idExterno` |
+      | Parceiro - Código | `parceiroCodigo` |
+      | Parceiro - Razão Social | `cliente` |
+      | Cadastro | `dataPedido` (parte da data) + `cadastroPlanilha` (data e hora completas) |
+      | Transportadora (nota fiscal) | `modalidade` (exibido no painel como "Modalidade") |
+      | Nome do representante | `nomeRepresentante` |
+      | Quantidade de Itens (aceita também a grafia com erro de digitação "Quantidade de Iitens", como veio no arquivo-modelo original) | `quantidadeItens` |
+      | DIAS | `slaDias` |
+      A coluna "Data de Recebimento no Estoque" **não existe na planilha**
+      — por decisão explícita do solicitante ("esse será lançado
+      manualmente pelo operador... terá pedidos que poderão ter prazos
+      menores e outros padrões"), ela fica em branco e é preenchida à mão
+      na prévia, junto com a Data do Pedido e o SLA (ambos pré-preenchidos
+      a partir da planilha, mas editáveis, pelo mesmo motivo).
+    - **Prévia editável antes de efetivar:** depois de carregado o
+      arquivo, aparece uma prévia com todos os pedidos lidos, com botões
+      "Cancelar" (descarta tudo, nada é gravado) e "Enviar" (grava todos de
+      uma vez no Firestore, via `writeBatch`, em lotes de até 450 operações
+      por chamada). Data do Pedido, Rec. Estoque e SLA (dias) são editáveis
+      diretamente na prévia; os demais campos vêm fixos da planilha (para
+      corrigi-los, é preciso ajustar o arquivo de origem e reimportar).
+    - **Duplicidade bloqueia a importação inteira:** decisão explícita do
+      solicitante ("Bloquear a importação inteira"). Se qualquer "Número
+      do pedido" do arquivo já existir no Firestore, **ou** se duas linhas
+      do próprio arquivo tiverem o mesmo número, a importação é bloqueada
+      por completo — o botão "Enviar" fica desabilitado e a lista de
+      números duplicados é exibida — até o arquivo ser corrigido e
+      reenviado. Nenhum pedido é gravado parcialmente nesse caso.
+    - **Novos campos exibidos no Painel Consolidado:** nova coluna
+      "Modalidade" na tabela (ao lado de Cliente) e sub-linhas discretas
+      sob o nome do Cliente com o Representante e a data/hora de
+      "Cadastro" (mesmo padrão na versão em cartão do "modo celular"). O
+      "ID" e o "Parceiro - Código" não aparecem em nenhuma coluna/sub-linha
+      (o segundo propositalmente oculto, por pedido do solicitante), mas
+      **ambos são localizáveis pela busca** do Painel Consolidado — buscar
+      por um ID ou código de parceiro encontra o pedido correspondente.
+      Em "Editar Pedido", uma seção somente-leitura "Dados da importação"
+      mostra os quatro campos (ID, Parceiro - Código, Modalidade,
+      Representante) apenas para pedidos que vieram de uma importação —
+      pedidos lançados manualmente não mostram essa seção.
+    - **Alerta de pedido de grande volume (> 15 caixas):** por decisão
+      explícita do solicitante (opção recomendada), um pop-up de alerta
+      (título e texto em vermelho) aparece assim que "Finalizar
+      Organização" é concluído com sucesso — nos dois pontos de entrada
+      (modal "⏱️ Registro de Separação e Organização" e atalho
+      "Atribuição") — sempre que a quantidade de caixas **fechadas**
+      informada for maior que 15. É só um aviso de prioridade: a
+      finalização em si já aconteceu antes do alerta aparecer, então
+      fechá-lo ("Entendi") não desfaz nem repete nada.
+    - **Integração com o sistema de logística (webhook):** ao finalizar um
+      pedido **por completo** (quando a Organização é finalizada com a
+      Separação já concluída — o mesmo ponto em que `finalizarPedido` já
+      era chamado), o app dispara, em segundo plano e sem bloquear a
+      finalização, uma chamada `GET` para a URL informada pelo
+      solicitante (`...script.google.com/.../exec?m=logistica`), com os
+      parâmetros `Pedido` (número do pedido), `CLIENTE`, `CAIXAS`
+      (quantidade de caixas fechadas), `SOLICITAÇÃO` (data da baixa, no
+      formato dd/mm/aaaa) e `status` fixo em `Pendente`. Decisões de
+      design assumidas (não detalhadas pelo solicitante): a chamada usa
+      `fetch(..., { mode: 'no-cors' })`, porque o endpoint é um Google Apps
+      Script de terceiro cuja configuração de CORS o app não controla —
+      isso evita que o navegador bloqueie o envio, mas, em contrapartida,
+      só é possível detectar falha de **rede** (sem internet, domínio
+      inacessível); uma eventual rejeição do lado do Apps Script não chega
+      ao app, e uma falha de envio é só registrada no console do navegador
+      (`console.warn`), sem exibir erro bloqueante para o operador — a
+      finalização do pedido no Firestore nunca é desfeita por causa disso.
+      **Esta chamada real nunca foi disparada contra a URL de produção
+      informada pelo solicitante durante o desenvolvimento** — os testes
+      automatizados (seção 8) interceptam e simulam esse endpoint; a
+      confirmação de que a integração está de fato funcionando deve ser
+      feita finalizando um pedido de teste e conferindo a chegada no
+      sistema de logística.
+    - **"Maquiagem" minimalista/profissional:** por pedido do solicitante,
+      o alinhamento dos títulos da tabela do Painel Consolidado foi
+      ajustado (cabeçalhos que quebram em mais de uma linha, por haver
+      mais colunas agora, ficam com entrelinha mais compacta e alinhados
+      pela base) — o restante da identidade visual (seção 4) não foi
+      alterado nesta atualização; qualquer redesign mais amplo da
+      aparência fica para uma próxima rodada, caso o solicitante queira
+      detalhar o que entende por "maquiagem".
+
 Todas essas premissas estão comentadas diretamente no código-fonte
 (`app.js`), próximo à lógica correspondente, para facilitar consultas
 futuras.
@@ -865,9 +970,63 @@ firebase deploy
     manteve "de graça" a troca de origem do "N cx" no Painel de Tempos (que
     já lia esse mesmo nome de campo, sem precisar de nenhuma alteração de
     lógica).
+- **Importação em lote, novos campos de referência, alerta de grande
+  volume e webhook de logística (item 33):** testes automatizados
+  (Playwright, com o Firestore simulado — incluindo `writeBatch` — e a
+  biblioteca **real** do SheetJS, mesma versão exata da CDN, para ler
+  arquivos `.xlsx` de verdade em vez de um mock), 54 verificações,
+  cobrindo: leitura de uma planilha com colunas em ordem embaralhada e
+  mapeamento correto de todos os campos pelo nome do cabeçalho (incluindo a
+  variação com erro de digitação "Quantidade de Iitens"); prévia mostrando
+  Data do Pedido e SLA pré-preenchidos a partir da planilha e Rec. Estoque
+  em branco (exige preenchimento manual); botão "Enviar" desabilitado
+  enquanto houver campo obrigatório em branco e habilitado depois de
+  preenchido; gravação em lote bem-sucedida e os 3 pedidos aparecendo
+  corretamente no Painel Consolidado (nova coluna "Modalidade", sub-linhas
+  de Representante e Cadastro sob o Cliente); busca por "ID" e por
+  "Parceiro - Código" (nenhum dos dois visível na tabela) encontrando o
+  pedido correspondente; seção "Dados da importação" aparecendo em
+  "Editar Pedido" só para pedidos importados (ausente num pedido lançado
+  manualmente no mesmo teste); bloqueio da importação **inteira** com
+  duplicidade **dentro do próprio arquivo** e também contra um "Número do
+  pedido" **já existente** no sistema, em ambos os casos sem gravar nada
+  (contagem de pedidos antes/depois idêntica) e com "Cancelar" descartando
+  a prévia; alerta de pedido de grande volume aparecendo com mais de 15
+  caixas fechadas, tanto pelo modal "⏱️" quanto pelo atalho "Atribuição"
+  (citando o número do pedido e a quantidade no texto), e **não** aparecendo
+  com 15 ou menos; chamada ao webhook de logística interceptada e simulada
+  (nunca disparada contra a URL real) confirmando os parâmetros `Pedido`,
+  `CLIENTE`, `CAIXAS` e `status=Pendente` corretos em dois pedidos
+  diferentes; e extração em Excel incluindo as novas colunas "ID",
+  "Parceiro - Código", "Modalidade" e "Representante" na aba "Pedidos" com
+  os valores corretos. Zero erros JavaScript não tratados em todos os
+  cenários (à parte do aviso esperado de rede ao tentar alcançar a URL real
+  do webhook nos testes de regressão do item 32, que não mockam esse
+  endpoint — inofensivo, pois a chamada é propositalmente "fire-and-forget"
+  e não bloqueia nada).
+  - Reexecutados os 28 testes automatizados do item 32 após estas
+    alterações (regressão): todos continuam passando normalmente.
+  - **Decisões confirmadas com o solicitante antes da implementação** (via
+    perguntas de esclarecimento): (1) a coluna "Quantidade de Itens" da
+    planilha-modelo é dado fictício de amostra, mapeada diretamente sem
+    tratamento especial; (2) qualquer duplicidade de "Número do pedido"
+    bloqueia a importação inteira, em vez de importar só os pedidos novos
+    ou pedir para escolher linha a linha; (3) Data do Pedido, Data de
+    Recebimento no Estoque e SLA ficam editáveis na prévia, lançados/
+    ajustados manualmente pelo operador, pois nem todo pedido segue o
+    prazo padrão; (4) o alerta de mais de 15 caixas aparece ao finalizar a
+    Organização (opção recomendada, confirmada pelo solicitante).
+  - **Decisões de design assumidas** (não detalhadas pelo solicitante, ver
+    item 33 na seção 3): formato `GET` com `mode: 'no-cors'` para o
+    webhook de logística; parâmetro `SOLICITAÇÃO` enviado no formato
+    dd/mm/aaaa; falhas de rede do webhook registradas só em
+    `console.warn`, sem bloquear a finalização do pedido.
 - **A integração real com o Firebase em produção não foi testada nesta
   sessão** (o ambiente de desenvolvimento não tem acesso à internet para
   isso) — os testes acima usam um Firestore simulado. Após publicar estes
   arquivos, recomenda-se validar no navegador real: sincronização em tempo
-  real entre duas abas/computadores, e o fluxo de Registro de Separação
-  (iniciar em um computador, finalizar em outro).
+  real entre duas abas/computadores, o fluxo de Registro de Separação
+  (iniciar em um computador, finalizar em outro) e, para o item 33 em
+  particular, a chegada efetiva da notificação no sistema de logística ao
+  finalizar um pedido de teste de verdade (nunca testado contra a URL
+  real nesta sessão).

@@ -433,6 +433,13 @@ thead th {
   overflow-wrap: break-word;
   word-break: break-word;
   hyphens: auto;
+  /* Com mais colunas na tabela (item 33 do README: nova coluna Modalidade),
+     títulos de duas ou mais palavras quebram em mais de uma linha com mais
+     frequência - esta altura de linha mais compacta e o alinhamento pela
+     base evitam que o título pareça "flutuar" solto da borda inferior do
+     cabeçalho quando isso acontece. */
+  line-height: 1.25;
+  vertical-align: bottom;
 }
 
 tbody td {
@@ -1008,4 +1015,117 @@ tbody tr:last-child td { border-bottom: none; }
   color: var(--cor-texto-secundario);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------------
+   13. Importação em lote de pedidos via planilha (item 33 do README)
+   --------------------------------------------------------------------- */
+.form-importacao-pedidos h2 { margin-bottom: 10px; }
+
+.campo-upload-planilha {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--cor-texto-secundario);
+  max-width: 420px;
+}
+.campo-upload-planilha input[type="file"] {
+  padding: 9px 10px;
+  border: 1px dashed var(--cor-borda);
+  border-radius: var(--raio-padrao);
+  background: var(--cor-fundo-elevado);
+  color: var(--cor-texto);
+  font-weight: 400;
+  font-size: 0.82rem;
+}
+
+.preview-importacao {
+  margin-top: 16px;
+  border-top: 1px solid var(--cor-borda);
+  padding-top: 16px;
+}
+.preview-importacao h3 { margin: 0 0 10px; font-size: 0.95rem; }
+
+/* Campos editáveis dentro da prévia (Data do Pedido, Rec. Estoque e SLA) -
+   mais discretos que um <input> de formulário comum, para não brigar
+   visualmente com o restante da tabela. */
+.input-preview-importacao {
+  width: 100%;
+  min-width: 90px;
+  padding: 6px 7px;
+  border: 1px solid var(--cor-borda);
+  border-radius: 6px;
+  background: var(--cor-fundo-elevado);
+  color: var(--cor-texto);
+  font-size: 0.82rem;
+  font-family: inherit;
+}
+.input-preview-importacao:focus {
+  outline: 2px solid var(--cor-primaria);
+  outline-offset: 1px;
+}
+
+/* Linha com campo obrigatório em branco ou SLA/quantidade inválida -
+   destaque discreto (a mensagem completa do problema fica no title/tooltip
+   da linha, sem poluir a tabela com texto extra em cada célula). */
+.linha-importacao-invalida { background: color-mix(in srgb, var(--cor-perigo) 8%, transparent); }
+.linha-importacao-invalida:hover { background: color-mix(in srgb, var(--cor-perigo) 14%, transparent); }
+
+.preview-importacao-acoes {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+/* Sub-linhas discretas sob o nome do Cliente (representante e data/hora de
+   cadastro trazidos pela importação em lote - ver criarCelulaCliente em
+   app.js). Ausentes em pedidos lançados manualmente pelo formulário. */
+.col-cliente { display: table-cell; }
+.cliente-nome { display: block; font-weight: 600; }
+.cliente-sublinha {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--cor-texto-secundario);
+  font-weight: 400;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Mesmo padrão para a versão em cartão ("modo celular"). */
+.card-pedido-sublinha {
+  font-size: 0.76rem;
+  color: var(--cor-texto-secundario);
+  margin-top: -4px;
+}
+
+/* Seção somente leitura "Dados da importação" no modal Editar Pedido. */
+.lista-dados-importacao {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 16px;
+  margin: 0;
+}
+.lista-dados-importacao div { display: flex; flex-direction: column; gap: 2px; }
+.lista-dados-importacao dt {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--cor-texto-secundario);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+.lista-dados-importacao dd { margin: 0; font-size: 0.88rem; color: var(--cor-texto); }
+
+/* Modal de alerta para pedidos de grande volume (>15 caixas fechadas ao
+   finalizar a Organização - item 33 do README). Texto e título em vermelho
+   (cor de perigo) para chamar atenção, já que a finalização em si já
+   aconteceu antes deste alerta aparecer - é só um aviso de prioridade. */
+.modal-alerta-caixas #modalAlertaCaixasTitulo { color: var(--cor-perigo); }
+.texto-alerta-caixas {
+  color: var(--cor-perigo);
+  font-weight: 600;
+  font-size: 0.95rem;
+  margin: 0;
 }

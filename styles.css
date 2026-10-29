@@ -197,6 +197,16 @@ input, select, textarea { font-family: inherit; font-size: 0.9rem; }
   font-weight: 600;
   transition: background 0.15s ease, opacity 0.15s ease;
 }
+/* Sem isto, um botão desabilitado via JavaScript (ex.: "Enviar" da
+   importação em lote, item 33 do README, enquanto houver campo obrigatório
+   em branco) ficava com a MESMA aparência de um botão habilitado - clicável
+   na aparência, mas sem fazer nada ao clicar, o que confundia quem estava
+   usando o painel. Vale para qualquer botão com a classe .btn, de qualquer
+   cor (.btn-primary, .btn-secondary etc.). */
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 .btn-primary { background: var(--cor-primaria); color: var(--cor-primaria-contraste); }
 .btn-primary:hover { background: var(--cor-primaria-hover); }
 .btn-secondary { background: var(--cor-secundaria-fundo); color: var(--cor-texto); }

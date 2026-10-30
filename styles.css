@@ -416,6 +416,25 @@ section {
   border-radius: var(--raio-padrao);
 }
 
+/* Barra de rolagem horizontal "espelho" acima da tabela de Pedidos (pedido
+   do Roberto - a barra de verdade, do .tabela-wrapper, só aparece depois da
+   última linha, o que fica longe da tela com muitos pedidos). Mostra só a
+   barra de rolagem do navegador, sem nenhum conteúdo visível dentro - a
+   largura do <div> interno é ajustada via JavaScript (ver
+   sincronizarRolagemSuperiorTabela em app.js) para ficar igual à largura
+   real da tabela, e a rolagem é sincronizada nos dois sentidos com a barra
+   de baixo. Como não há conteúdo clicável aqui, fica oculta de leitores de
+   tela (aria-hidden no HTML). */
+.rolagem-superior-tabela {
+  overflow-x: auto;
+  overflow-y: hidden;
+  height: 16px;
+  margin-bottom: 6px;
+}
+.rolagem-superior-tabela > div {
+  height: 1px;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;

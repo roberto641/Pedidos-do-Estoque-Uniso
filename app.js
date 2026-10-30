@@ -3862,6 +3862,56 @@ function configurarExtracaoExcel() {
   botao.addEventListener('click', exportarDadosParaExcel);
 }
 
+// Barra de rolagem horizontal "espelho" logo acima da tabela de Pedidos
+// (item 34 do README) - a tabela pode ficar mais larga que a tela (mais
+// colunas, títulos sem quebra - ver item 34), e a barra de rolagem de
+// verdade (do .tabela-wrapper) só aparece depois da ÚLTIMA linha da
+// tabela - com poucos pedidos ela fica logo ali embaixo, mas com centenas
+// de pedidos (ex.: 615) ela fica fora da tela, exigindo rolar a página
+// inteira primeiro só para conseguir rolar a tabela para o lado. Esta
+// barra "espelho" fica fixa logo abaixo do texto explicativo, sempre
+// visível, e é sincronizada nos dois sentidos com a barra de verdade.
+function configurarRolagemSuperiorTabelaPedidos() {
+  const espelho = document.getElementById('rolagemSuperiorPedidos');
+  const espelhoInterno = document.getElementById('rolagemSuperiorPedidosInterno');
+  const wrapper = document.getElementById('tabelaPedidosWrapper');
+  const tabela = document.getElementById('tabelaPedidos');
+  if (!espelho || !espelhoInterno || !wrapper || !tabela) return;
+
+  // Mantém a largura do "espelho" igual à largura real da tabela - reage a
+  // qualquer mudança (redimensionar a janela, troca de modo celular/desktop
+  // etc.) via ResizeObserver, em vez de calcular só uma vez na inicialização.
+  function atualizarLargura() {
+    espelhoInterno.style.width = `${tabela.scrollWidth}px`;
+  }
+  atualizarLargura();
+
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(atualizarLargura).observe(tabela);
+  } else {
+    // Navegador sem ResizeObserver (raro): ao menos reage ao redimensionar
+    // a janela, para não deixar a barra com uma largura desatualizada.
+    window.addEventListener('resize', atualizarLargura);
+  }
+
+  // Sincroniza a rolagem horizontal nos dois sentidos. A flag evita loop
+  // infinito: ao ajustarmos o scrollLeft de um dos dois a partir do outro,
+  // o evento 'scroll' que isso dispara é ignorado nesse instante.
+  let sincronizando = false;
+  espelho.addEventListener('scroll', () => {
+    if (sincronizando) return;
+    sincronizando = true;
+    wrapper.scrollLeft = espelho.scrollLeft;
+    sincronizando = false;
+  });
+  wrapper.addEventListener('scroll', () => {
+    if (sincronizando) return;
+    sincronizando = true;
+    espelho.scrollLeft = wrapper.scrollLeft;
+    sincronizando = false;
+  });
+}
+
 /* =========================================================================
    11. DADOS DE DEMONSTRAÇÃO (opcional, não executado automaticamente)
    -------------------------------------------------------------------------
@@ -3932,5 +3982,6 @@ configurarFormularioColaboradores();
 configurarFiltrosEBusca();
 configurarImportacaoPedidos();
 configurarExtracaoExcel();
+configurarRolagemSuperiorTabelaPedidos();
 renderizarTudo();
 carregarFirebaseEIniciar();

@@ -762,6 +762,18 @@ podem ser ajustadas depois, se necessário:
       (`#tabelaPedidos`) — as demais tabelas do sistema (Histórico,
       Colaboradores etc.) não foram alteradas, pois não apresentavam o
       mesmo problema.
+    - **Barra de rolagem horizontal "espelho" acima da tabela:** consequência
+      direta da largura mínima acrescentada no ponto anterior — com mais
+      pedidos na lista, a barra de rolagem horizontal de verdade
+      (`.tabela-wrapper`) só aparece depois da **última linha** da tabela,
+      o que ficava longe da tela com muitos pedidos (ex.: 615), exigindo
+      rolar a página toda só para conseguir rolar a tabela para o lado. Por
+      pedido do solicitante, foi acrescentada uma segunda barra de rolagem,
+      só visual (sem conteúdo nela), fixa logo abaixo do texto explicativo
+      da seção "Pedidos" — sempre visível, independente da quantidade de
+      linhas. As duas barras ficam sincronizadas nos dois sentidos: rolar
+      uma rola a outra junto (`configurarRolagemSuperiorTabelaPedidos` em
+      `app.js`).
 
 Todas essas premissas estão comentadas diretamente no código-fonte
 (`app.js`), próximo à lógica correspondente, para facilitar consultas
@@ -1107,6 +1119,12 @@ firebase deploy
   - Reexecutados os 28 (item 32) + 54 (item 33) testes automatizados
     anteriores após estas alterações (regressão): todos continuam passando
     normalmente — nenhuma funcionalidade existente foi afetada.
+  - **Barra de rolagem horizontal "espelho" acima da tabela** (ajuste
+    solicitado logo após a entrega do item 34): verificado à parte, por
+    script Playwright ad-hoc (não incorporado às 37 verificações formais
+    acima): a largura do "espelho" acompanha exatamente a largura real da
+    tabela, e a rolagem sincroniza corretamente nos dois sentidos — rolar o
+    "espelho" move a barra de verdade, e vice-versa.
   - **Decisão confirmada com o solicitante antes da implementação:** a
     posição da coluna "Excluir" na prévia de importação é depois de "ID",
     conforme pedido explícito.

@@ -775,6 +775,99 @@ podem ser ajustadas depois, se necessário:
       uma rola a outra junto (`configurarRolagemSuperiorTabelaPedidos` em
       `app.js`).
 
+35. **Correção de um gap real na integração com o sistema de logística e
+    layout compacto do Painel Consolidado** (adicionado nesta atualização):
+    - **Gap encontrado e corrigido — pedido finalizado por "Editar Pedido"
+      não avisava a logística:** investigando por que um pedido de teste do
+      solicitante não apareceu no sistema de logística, foi encontrado um
+      caminho do sistema que também finaliza um pedido (`status:
+      'finalizado'`) sem nunca ter passado pela função que dispara o aviso
+      (`notificarSistemaLogistica`, item 33): corrigir manualmente em
+      "Editar Pedido" os registros de Separação e Organização até as duas
+      etapas ficarem completas finaliza o pedido automaticamente (mesma
+      regra do fluxo normal), mas esse caminho específico nunca chamava o
+      webhook. **Corrigido:** `salvarPedido` (`app.js`) agora dispara o
+      aviso também quando a finalização acontece por essa correção manual —
+      o pedido de teste do solicitante que não apareceu no outro sistema
+      pode ter sido finalizado exatamente por este caminho, ainda sem a
+      correção. Verificado com um teste automatizado dedicado (ver seção 8)
+      que finaliza um pedido só por "Editar Pedido" (sem usar o modal "⏱️"
+      nem o atalho "Atribuição") e confirma que o webhook é chamado, com os
+      parâmetros corretos.
+    - **Checklist do que falta para a integração funcionar de ponta a
+      ponta** (o que está do nosso lado já está pronto e testado; o que
+      falta depende do ambiente do solicitante, fora do alcance direto
+      desta sessão de desenvolvimento):
+      1. ✅ O app dispara a chamada corretamente em todo caminho que
+         finaliza um pedido (modal, atalho de Atribuição e, a partir desta
+         correção, edição manual) — confirmado pelos testes automatizados.
+      2. ⚠️ **O arquivo `app.js` publicado precisa ser exatamente o mais
+         recente**, sem truncar nem misturar versões — já identificado
+         durante esta sessão que havia divergência entre o que estava
+         publicado e o que foi entregue; recomendado reenviar os 3 arquivos
+         (`app.js`, `index.html`, `styles.css`) de uma vez só a cada
+         atualização, nunca só um dos três.
+      3. ⚠️ **A implantação ("Deploy") do Google Apps Script precisa estar
+         configurada para aceitar a chamada**: acesso "Qualquer pessoa"
+         (Anyone), e a versão implantada (não só salva no editor) precisa
+         ser a mais recente — um Apps Script editado mas não reimplantado
+         continua respondendo com o código ANTIGO.
+      4. ⚠️ **A função `doGet(e)` do Apps Script precisa ler exatamente os
+         nomes de parâmetro enviados** — `Pedido`, `CLIENTE`, `CAIXAS`,
+         `SOLICITAÇÃO` e `status` (maiúsculas/acentos importam) — e gravá-
+         los nas colunas certas da planilha/painel de logística. Como o
+         envio usa `mode: 'no-cors'` (decisão de design do item 33, pela
+         falta de controle sobre o CORS de um Apps Script de terceiro), o
+         navegador NUNCA informa se o Apps Script aceitou ou rejeitou os
+         dados — só se a rede estava disponível.
+      5. ⚠️ **Validação fim a fim só é possível no ambiente real do
+         solicitante** — este ambiente de desenvolvimento não tem acesso de
+         rede a `script.google.com` (bloqueio do proxy do ambiente,
+         confirmado nesta sessão), então a chamada real nunca pôde ser
+         testada contra a URL de produção informada. O protocolo de teste
+         recomendado: abrir as Ferramentas do Desenvolvedor do navegador
+         (F12) → aba "Rede"/"Network" → finalizar um pedido de teste →⁣
+         confirmar que uma chamada para `script.google.com` aparece na
+         lista (mesmo com resposta "opaca", por causa do `no-cors`, ela
+         aparece como tentativa); depois, no editor do Apps Script, abrir
+         "Execuções"/"Executions" e confirmar que a chamada chegou e não
+         deu erro do lado de lá. Se a chamada aparece no navegador mas NÃO
+         aparece nas Execuções do Apps Script, o problema está na
+         implantação (pontos 3/4 acima); se nem aparece no navegador, o
+         problema está no arquivo publicado (ponto 2 acima).
+    - **Layout compacto do Painel Consolidado — menos colunas, sem precisar
+      rolar:** por pedido do solicitante (o layout anterior, mesmo com os
+      ajustes dos itens 33/34, ainda exigia rolar a barra horizontal no dia
+      a dia, atrasando o fluxo do operador), as colunas "Modalidade",
+      "Recebimento", "SLA (dias)" e "Observação" deixaram de existir como
+      colunas próprias da tabela — a tabela caiu de 14 para **10 colunas**.
+      O conteúdo não foi removido, só reorganizado em sub-linhas dentro de
+      duas colunas já existentes:
+      - **Nº Pedido:** Observação acima do número (só quando houver — "se
+        tiver", por pedido explícito do solicitante) e SLA abaixo, sem
+        rótulo (ex.: "5 dias").
+      - **Cliente:** Data de Recebimento no Estoque acima do nome (só a
+        data, rótulo curto "Receb.:"), seguida do nome do cliente, das
+        sub-linhas já existentes de Representante/Cadastro (item 33, quando
+        o pedido veio de importação em lote) e, por fim, a Modalidade, sem
+        nenhum rótulo — só o texto trazido da planilha.
+      A largura mínima da tabela caiu de 1680px para **1240px**, reduzindo
+      bastante a necessidade de rolagem horizontal na maioria dos monitores
+      (a barra de rolagem e a barra "espelho" acima dela, do ponto
+      anterior, continuam existindo como reforço para telas mais estreitas
+      ou com zoom do navegador maior, mas tendem a não ser acionadas no uso
+      normal). A extração em Excel **não foi alterada** — continua trazendo
+      Modalidade, Recebimento, SLA e Observação como colunas próprias da
+      planilha exportada, já que ali o espaço não é limitado como na tela.
+    - **Decisões de design assumidas** (não detalhadas pelo solicitante):
+      rótulo curto "Receb.:" para a Data de Recebimento no Estoque (o
+      solicitante pediu "somente a data", sem especificar se um rótulo
+      curto deveria acompanhar — mantido por consistência com os já
+      existentes "Repr.:"/"Cadastro:" na mesma coluna); SLA mostrado como
+      "N dias" (em vez do número isolado), para não ficar ambíguo logo
+      abaixo do número do pedido, já que o pedido do solicitante foi só não
+      repetir o rótulo/título da coluna ("SLA"), não omitir a unidade.
+
 Todas essas premissas estão comentadas diretamente no código-fonte
 (`app.js`), próximo à lógica correspondente, para facilitar consultas
 futuras.
@@ -1135,6 +1228,41 @@ firebase deploy
     sem confirmação; título da coluna "SLA (dias úteis)" encurtado para
     "SLA (dias)" no Painel Consolidado, para caber em uma linha só sem
     aumentar demais a largura mínima da tabela.
+- **Correção do gap de integração com a logística e layout compacto (item
+  35):** testes automatizados (Playwright), 18 verificações, cobrindo: a
+  tabela do Painel Consolidado com exatamente 10 colunas, nos títulos e na
+  ordem esperados, confirmando que Modalidade/Recebimento/SLA/Observação não
+  existem mais como colunas próprias; sub-linha "Receb.:" com a data
+  correta no topo da coluna Cliente; Modalidade aparecendo sem nenhum
+  rótulo; SLA aparecendo como "N dias" junto ao Nº Pedido, sem a palavra
+  "SLA"; largura mínima da tabela reduzida (1240px, era 1680px); Observação
+  aparecendo como sub-linha só quando o pedido tiver uma (um pedido sem
+  observação não mostra sub-linha vazia); e, o ponto mais importante desta
+  rodada, um pedido cadastrado manualmente e levado a "Finalizado" **apenas
+  pela correção manual em "Editar Pedido"** (preenchendo Separação e
+  Organização até as duas etapas ficarem completas, sem passar pelo modal
+  "⏱️" nem pelo atalho "Atribuição") **dispara corretamente o webhook de
+  logística** — confirmado que a chamada é feita, com o número do pedido e
+  a quantidade de caixas corretos. Zero erros JavaScript não tratados.
+  - Reexecutados os 28 (item 32) + 53 (item 33, 1 checagem desatualizada
+    pelo novo layout foi corrigida, sem perda de cobertura) + 33 (item 34)
+    testes automatizados anteriores após estas alterações (regressão):
+    todos continuam passando normalmente.
+  - **Decisão confirmada com o solicitante antes da implementação:** a
+    reorganização exata das sub-linhas (Observação e SLA em "Nº Pedido";
+    Recebimento e Modalidade em "Cliente") seguiu as posições indicadas
+    explicitamente pelo solicitante, por anotações numeradas numa captura
+    de tela do painel.
+  - **Decisão de design assumida** (não detalhada pelo solicitante): a
+    correção do gap do webhook (ponto acima) foi implementada porque é
+    consequência direta e necessária do objetivo que o próprio solicitante
+    descreveu para esta integração ("um programa conversando com outro" de
+    forma automática, sempre que um pedido for finalizado) — não faria
+    sentido o aviso à logística depender de QUAL caminho finalizou o
+    pedido. Caso o solicitante prefira que a correção manual em "Editar
+    Pedido" NÃO dispare o webhook (por exemplo, se achar que esse caminho é
+    usado só para consertar um erro de lançamento, não uma finalização "de
+    verdade"), é só avisar para reverter esse ponto específico.
 - **A integração real com o Firebase em produção não foi testada nesta
   sessão** (o ambiente de desenvolvimento não tem acesso à internet para
   isso) — os testes acima usam um Firestore simulado. Após publicar estes

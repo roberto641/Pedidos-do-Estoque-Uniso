@@ -56,7 +56,7 @@ Cada documento representa um pedido:
 | `numeroPedido`                 | string             | Número do pedido informado pelo usuário                  |
 | `cliente`                      | string             | Nome do cliente                                          |
 | `dataPedido`                   | string `yyyy-mm-dd`| Data do pedido                                           |
-| `dataRecebimentoEstoque`       | string `yyyy-mm-dd`| Data de recebimento no estoque                            |
+| `dataRecebimentoEstoque`       | string `yyyy-mm-dd`| Data de recebimento no estoque. Lançada manualmente no cadastro/prévia de importação, ou lida diretamente da coluna "Rec. Estoque" da planilha quando ela existir no arquivo (item 34) — de qualquer forma, continua editável na prévia antes de enviar |
 | `slaDias`                      | number             | Prazo de SLA em **dias úteis**                            |
 | `dataVencimento`               | string `yyyy-mm-dd`| Calculada automaticamente (recebimento + SLA em dias úteis) |
 | `quantidadeItens`              | number             | Quantidade de itens informada no **cadastro do pedido** (obrigatório) — a separação busca os produtos/embalagens com base nela. Até o item 31, este dado ficava no campo `quantidadeCaixas` (ver nota sobre o item 32 abaixo); renomeado para não se confundir com a contagem final de caixas abaixo |
@@ -627,12 +627,16 @@ podem ser ajustadas depois, se necessário:
       | Nome do representante | `nomeRepresentante` |
       | Quantidade de Itens (aceita também a grafia com erro de digitação "Quantidade de Iitens", como veio no arquivo-modelo original) | `quantidadeItens` |
       | DIAS | `slaDias` |
-      A coluna "Data de Recebimento no Estoque" **não existe na planilha**
-      — por decisão explícita do solicitante ("esse será lançado
-      manualmente pelo operador... terá pedidos que poderão ter prazos
-      menores e outros padrões"), ela fica em branco e é preenchida à mão
-      na prévia, junto com a Data do Pedido e o SLA (ambos pré-preenchidos
-      a partir da planilha, mas editáveis, pelo mesmo motivo).
+      Na época desta importação (item 33), a coluna "Data de Recebimento no
+      Estoque" não existia na planilha-modelo — por decisão do solicitante
+      ("esse será lançado manualmente pelo operador... terá pedidos que
+      poderão ter prazos menores e outros padrões"), ficava em branco e era
+      preenchida à mão na prévia. **Atualizado no item 34** abaixo: o
+      solicitante acrescentou a coluna "Rec. Estoque" ao arquivo-modelo, e
+      agora ela é lida automaticamente quando presente (continua editável
+      na prévia, para arquivos sem essa coluna ou ajuste pontual). A Data do
+      Pedido e o SLA seguem pré-preenchidos a partir da planilha, mas
+      editáveis, pelo mesmo motivo.
     - **Prévia editável antes de efetivar:** depois de carregado o
       arquivo, aparece uma prévia com todos os pedidos lidos, com botões
       "Cancelar" (descarta tudo, nada é gravado) e "Enviar" (grava todos de
@@ -640,6 +644,17 @@ podem ser ajustadas depois, se necessário:
       por chamada). Data do Pedido, Rec. Estoque e SLA (dias) são editáveis
       diretamente na prévia; os demais campos vêm fixos da planilha (para
       corrigi-los, é preciso ajustar o arquivo de origem e reimportar).
+    - **Correção pós-entrega (botão "Enviar" sem feedback visual):** o
+      solicitante reportou que o botão "Enviar" parecia clicável mas não
+      fazia nada quando havia campo obrigatório em branco (ex.: Rec.
+      Estoque) — causa raiz: faltava CSS para botão desabilitado (um botão
+      com `disabled` tinha a mesma aparência de um habilitado) e não havia
+      nenhuma mensagem explicando o motivo do bloqueio (só duplicidade
+      mostrava aviso). Corrigido: regra `.btn:disabled` em `styles.css`
+      (válida para qualquer botão do sistema, não só este) e o mesmo
+      parágrafo de aviso agora também lista, campo a campo e pedido a
+      pedido, o que falta preencher quando o motivo do bloqueio não é
+      duplicidade.
     - **Duplicidade bloqueia a importação inteira:** decisão explícita do
       solicitante ("Bloquear a importação inteira"). Se qualquer "Número
       do pedido" do arquivo já existir no Firestore, **ou** se duas linhas
@@ -700,6 +715,53 @@ podem ser ajustadas depois, se necessário:
       alterado nesta atualização; qualquer redesign mais amplo da
       aparência fica para uma próxima rodada, caso o solicitante queira
       detalhar o que entende por "maquiagem".
+
+34. **Coluna "Rec. Estoque" na importação, exclusão de linha individual na
+    prévia e correção de alinhamento do Painel Consolidado** (adicionado
+    nesta atualização):
+    - **Coluna "Rec. Estoque" lida da planilha:** o solicitante acrescentou
+      esta coluna ao arquivo-modelo (posicionada depois de "ID" no arquivo
+      dele). Quando presente, o valor é lido automaticamente e mapeado para
+      `dataRecebimentoEstoque`, pré-preenchendo o campo na prévia (igual já
+      acontecia com Data do Pedido e SLA) — e continua editável ali, para
+      arquivos sem essa coluna ou quando o valor precisar de ajuste. Aceita
+      célula de data (igual a "Cadastro") ou texto `dd/mm/aaaa`/`aaaa-mm-dd`.
+    - **Caixa "Excluir" em cada linha da prévia de importação:** nova
+      coluna "Excluir" (depois de "ID", por pedido do solicitante) com uma
+      caixa de seleção em cada linha. Por decisão explícita do solicitante
+      ("não ter que retirar tudo por causa de um item"), marcar essa caixa
+      tira **apenas aquela linha** do envio, sem precisar cancelar a
+      importação inteira: a linha fica visualmente esmaecida/tachada (mas
+      pode ser desmarcada), e passa a ficar de fora tanto da validação de
+      campos obrigatórios/duplicidade quanto do que é de fato gravado ao
+      clicar em "Enviar". Isso inclui destravar o botão "Enviar" quando a
+      linha excluída era justamente a causa do bloqueio (ex.: marcar
+      "Excluir" numa das duas linhas com "Número do pedido" duplicado
+      libera o envio do restante do lote). A mensagem de sucesso informa
+      quantos pedidos foram importados e quantos ficaram de fora por terem
+      sido marcados como "Excluir".
+    - **Alinhamento e quebra de texto no Painel Consolidado:** por pedido
+      do solicitante ("corrija os textos justificando e deixando
+      centralizados... sem quebras"), os títulos da tabela do Painel
+      Consolidado (ex.: "Recebimento", "Vencimento", "Organização") não
+      quebram mais no meio da palavra — a causa raiz era a tabela em
+      `table-layout: fixed` com colunas definidas só em percentual, que
+      ficavam estreitas demais para o título caber em uma linha depois que
+      mais colunas foram adicionadas (itens 32 e 33). A correção dá à
+      tabela uma largura mínima real (`min-width`), garantindo espaço
+      suficiente para cada título em uma linha só; em telas mais estreitas
+      que essa largura mínima, quem rola é a barra horizontal do quadro da
+      tabela (`.tabela-wrapper`, já existente), em vez do título quebrar ou
+      o conteúdo ficar espremido. Título e dado de cada coluna também
+      passam a ficar centralizados entre si — exceto Cliente e Observação
+      (texto livre/variável, mantidos à esquerda para facilitar a leitura) e
+      Ações (mantida à direita, padrão já usado para botões). O título da
+      coluna "SLA (dias úteis)" foi encurtado para "SLA (dias)" (mesmo texto
+      já usado na prévia de importação) para caber confortavelmente em uma
+      linha só. Esta correção é específica da tabela do Painel Consolidado
+      (`#tabelaPedidos`) — as demais tabelas do sistema (Histórico,
+      Colaboradores etc.) não foram alteradas, pois não apresentavam o
+      mesmo problema.
 
 Todas essas premissas estão comentadas diretamente no código-fonte
 (`app.js`), próximo à lógica correspondente, para facilitar consultas
@@ -1021,6 +1083,40 @@ firebase deploy
     webhook de logística; parâmetro `SOLICITAÇÃO` enviado no formato
     dd/mm/aaaa; falhas de rede do webhook registradas só em
     `console.warn`, sem bloquear a finalização do pedido.
+- **Coluna "Rec. Estoque", exclusão de linha na importação e alinhamento
+  do Painel Consolidado (item 34):** testes automatizados (Playwright, mesma
+  infraestrutura dos itens 32/33), 37 verificações, cobrindo: planilha com a
+  coluna "Rec. Estoque" preenchida numa linha e em branco na outra — a
+  prévia vem com o campo pré-preenchido só na linha que tinha valor na
+  planilha, continuando em branco (e bloqueando o "Enviar") na linha sem
+  valor, até o preenchimento manual; planilha com duplicidade de "Número do
+  pedido" em que marcar "Excluir" numa das duas linhas duplicadas remove o
+  aviso de bloqueio e habilita o "Enviar" sem precisar cancelar o lote
+  inteiro, com o contador do botão refletindo corretamente a quantidade
+  ativa (excluindo a marcada); gravação confirmando que **só** a linha não
+  marcada foi de fato enviada ao Firestore (a excluída não aparece no
+  Painel Consolidado) e que a mensagem de sucesso informa quantas linhas
+  ficaram de fora; e, na tabela do Painel Consolidado, os 14 títulos de
+  coluna centralizados e sem quebra em mais de uma linha (verificado
+  contando as "linhas visuais" do texto do título via `Range.getClientRects()`,
+  não por captura de tela), alinhamento de cada coluna de dados conforme o
+  esperado (maioria centralizada; Cliente e Observação à esquerda; Ações à
+  direita) e o quadro da tabela preparado para rolagem horizontal quando a
+  tabela excede a largura visível, em vez de espremer colunas. Zero erros
+  JavaScript não tratados.
+  - Reexecutados os 28 (item 32) + 54 (item 33) testes automatizados
+    anteriores após estas alterações (regressão): todos continuam passando
+    normalmente — nenhuma funcionalidade existente foi afetada.
+  - **Decisão confirmada com o solicitante antes da implementação:** a
+    posição da coluna "Excluir" na prévia de importação é depois de "ID",
+    conforme pedido explícito.
+  - **Decisões de design assumidas** (não detalhadas pelo solicitante):
+    marcar "Excluir" mantém a linha visível na prévia (esmaecida/tachada,
+    podendo ser desmarcada) em vez de removê-la imediatamente da tela — dá
+    mais segurança contra clique por engano do que uma exclusão definitiva
+    sem confirmação; título da coluna "SLA (dias úteis)" encurtado para
+    "SLA (dias)" no Painel Consolidado, para caber em uma linha só sem
+    aumentar demais a largura mínima da tabela.
 - **A integração real com o Firebase em produção não foi testada nesta
   sessão** (o ambiente de desenvolvimento não tem acesso à internet para
   isso) — os testes acima usam um Firestore simulado. Após publicar estes

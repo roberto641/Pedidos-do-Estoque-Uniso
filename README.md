@@ -1292,11 +1292,42 @@ podem ser ajustadas depois, se necessário:
       retroativamente sem reimportar essas linhas. Pedidos lançados
       manualmente (sem planilha de origem) também ficam com essa coluna
       vazia, como já acontecia com "Cadastro (planilha de origem)".
-    - **Sem impacto em nenhuma outra tela ou integração:** a sub-linha
-      "Cadastro:" do Painel Consolidado (itens 33/34) e a "Data da
-      solicitação" enviada ao FLOW HUB (item 37) continuam exatamente como
-      estavam, usando os campos originais `cadastroPlanilha` e
-      `andamentoCadastro` — só a extração em Excel foi alterada.
+    - **Sem impacto na integração com o FLOW HUB:** a "Data da solicitação"
+      enviada ao FLOW HUB (item 37) continua exatamente como estava, usando
+      o campo original `andamentoCadastro` — só a extração em Excel foi
+      alterada por este item. **Atualização:** a frase original aqui também
+      dizia que a sub-linha "Cadastro:" do Painel não seria afetada — isso
+      mudou no item 42, logo abaixo, a pedido do solicitante.
+
+42. **Prioridade da coluna "Andamento - Cadastro" também na "Data do
+    Pedido" exibida nas telas** (adicionado nesta atualização, a pedido do
+    solicitante, como extensão do item 41): não só a extração em Excel —
+    agora `dataPedido` e `cadastroPlanilha` (a "Data do Pedido" mostrada na
+    prévia da importação, a coluna "Data Pedido" no Painel Consolidado e a
+    sub-linha "Cadastro:"/"Receb.:" nos cards e na tabela) também priorizam
+    a coluna **"Andamento - Cadastro"** quando ela existir na planilha
+    importada, por ser a fonte mais precisa (com data e hora reais da
+    movimentação, não só a data de registro inicial).
+    - **Como funciona:** na importação em lote, se a planilha tiver a
+      coluna "Andamento - Cadastro", seu valor (data e hora) é usado tanto
+      para `dataPedido`/`cadastroPlanilha` (telas do Controle de SLA) quanto
+      para `andamentoCadastro`/`andamentoCadastroHora` (FLOW HUB/Excel,
+      item 41) — ou seja, as quatro fontes passam a vir da mesma coluna.
+      Se a planilha **não** tiver essa coluna (arquivos antigos ou sem
+      esse dado), o sistema cai de volta para a coluna "Cadastro", como
+      sempre funcionou — nenhum arquivo antigo quebra.
+    - **O que NÃO mudou, por decisão explícita do solicitante:**
+      - A integração com o FLOW HUB (`andamentoCadastro`, "Data da
+        solicitação", item 37) continua recebendo exatamente a mesma
+        informação de antes — ela já vinha de "Andamento - Cadastro", essa
+        mudança não altera nada ali.
+      - Nenhuma tela teve layout, rótulo ou formato alterado — só a fonte
+        do dado mudou. A sub-linha continua aparecendo como "Cadastro:
+        dd/mm/aaaa, hh:mm:ss", só que agora com o horário real da coluna
+        "Andamento - Cadastro" (antes aparecia sempre com hora 00:00:00,
+        porque a coluna "Cadastro" da planilha de origem não tem horário).
+    - **Pedidos lançados manualmente** (sem planilha de origem) não são
+      afetados — continuam sem essas colunas de referência.
 
 Todas essas premissas estão comentadas diretamente no código-fonte
 (`app.js`), próximo à lógica correspondente, para facilitar consultas

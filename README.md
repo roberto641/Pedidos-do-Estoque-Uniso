@@ -1329,6 +1329,24 @@ podem ser ajustadas depois, se necessário:
     - **Pedidos lançados manualmente** (sem planilha de origem) não são
       afetados — continuam sem essas colunas de referência.
 
+43. **Limiar do alerta "pedido de grande volume" corrigido de >15 para
+    >14 caixas** (adicionado nesta atualização, a pedido do solicitante):
+    o alerta de prioridade por volume (item 33, local no Controle de SLA,
+    e item 40, visual vermelho/negrito no Painel do FLOW HUB) foi pedido
+    originalmente como "quando Caixas > 15", mas essa comparação literal
+    só dispara a partir de **16** caixas (15 fica de fora). O solicitante
+    confirmou, com um teste real comparando um pedido de 15 caixas (não
+    destacado) e um de 16 (destacado), que o 15 também deveria entrar no
+    alerta — ou seja, a comparação correta é **`> 14`** (dispara a partir
+    de 15).
+    - **Onde foi corrigido:** `exibirAlertaCaixasSeNecessario` em `app.js`
+      (alerta local, ao finalizar a Organização) e a variável
+      `prioridadeCaixas` em `Index.html` do FLOW HUB (vermelho/negrito no
+      Painel de Logística e Expedição). Implantado como Versão 70 do
+      FLOW HUB e verificado visualmente: um pedido de 15 caixas passou a
+      aparecer em vermelho/negrito.
+    - Nenhuma outra lógica foi alterada — é só o número de comparação.
+
 Todas essas premissas estão comentadas diretamente no código-fonte
 (`app.js`), próximo à lógica correspondente, para facilitar consultas
 futuras.
